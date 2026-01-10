@@ -6,8 +6,19 @@ failed_login_counter = {}
 failed_login_user = {}
 
 alerted_keys = set()
-source = "windows"
+last_alert_time = {}
 
+source = "windows"
+ALERT_SUPPRESSION = timedelta(minutes=10)
+
+
+def alert_suppresion(event, key):
+        now = datetime.fromisoformat(event["timestamp"].replace("Z",""))
+        if key in last_alert_time:
+            if now - last_alert_time[key] < ALERT_SUPPRESSION:
+                return
+            
+        last_alert_time[key] = now
 
 def detect_windows_bruteforce(event):
 
@@ -47,6 +58,8 @@ def detect_windows_bruteforce(event):
             "Time Window": "5 minutes",         
             "Timestamp": event["timestamp"]
         }
+
+        alert_suppresion(event, ip)  
         emit_alert(alert)
 
 def detect_windows_password_spraying(event):
@@ -83,6 +96,8 @@ def detect_windows_password_spraying(event):
             "Time Window": "3 minutes",         
             "Timestamp": event["timestamp"]
         }
+
+        alert_suppresion(event, username)  
         emit_alert(alert)
 
 def normalize_timestamp(ts):
@@ -110,10 +125,14 @@ def parse_windows_log(line):
         return match.groupdict()
     return None
 
-def run_detections(event):
-    detect_windows_bruteforce(event)
-    detect_windows_password_spraying(event)
+DETECTIONS = [
+    detect_windows_bruteforce,
+    detect_windows_password_spraying
+]
 
+def run_detections(event):
+    for detection in DETECTIONS:
+            detection(event)
 
 
 with open(r"logs\windowsLogs.txt","r") as logText:
