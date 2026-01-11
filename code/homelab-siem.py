@@ -1,24 +1,77 @@
 import re #regex
 from datetime import datetime, timedelta
-
+import json
+import os
 
 failed_login_counter = {}
 failed_login_user = {}
-
-alerted_keys = set()
 last_alert_time = {}
 
 source = "windows"
+
 ALERT_SUPPRESSION = timedelta(minutes=10)
+STATE_FILE = "siem_state.json"
 
 
-def alert_suppresion(event, key):
+
+#Helper functions for iso-date conversion
+def dt_to_str(dt):
+    return datetime.isoformat(dt)
+
+def str_to_dt(str):
+    return datetime.fromisoformat(str)
+
+def serialize_state(): #Seralize for saving to .json file
+    return {
+        "failed_login_counter": {
+            ip: [(u, dt_to_str(t)) for (u, t) in attempts]
+            for ip, attempts in failed_login_counter.items()
+        },
+        "failed_login_user": {
+            user: [(ip, dt_to_str(t)) for (ip, t) in attempts]
+            for user, attempts in failed_login_user.items()
+        },
+        "last_alert_time": {
+            key: dt_to_str(t)
+            for key, t in last_alert_time.items()
+        }
+    }
+
+def save_state():
+    with open(STATE_FILE, "w") as f:
+        json.dump(serialize_state(), f, indent=2)
+
+
+
+def should_emit_alert(event, key):
         now = datetime.fromisoformat(event["timestamp"].replace("Z",""))
         if key in last_alert_time:
             if now - last_alert_time[key] < ALERT_SUPPRESSION:
-                return
+                return False 
             
         last_alert_time[key] = now
+        return True
+
+def load_state():
+    if not os.path.exists(STATE_FILE):
+        return
+    
+    with open (STATE_FILE,"r") as f:
+        data = json.load(f)
+
+    failed_login_counter.clear()
+    failed_login_user.clear()
+    last_alert_time.clear()
+
+    for ip, attempts in data.get("failed_login_counter", {}).items():
+        failed_login_counter[ip] = [(u, str_to_dt(t)) for (u, t) in attempts]
+
+    for user, attempts in data.get("failed_login_user", {}).items():
+        failed_login_user[user] = [(ip, str_to_dt(t)) for (ip, t) in attempts]
+
+    for key, t in data.get("last_alert_time", {}).items():
+        last_alert_time[key] = str_to_dt(t)        
+
 
 def detect_windows_bruteforce(event):
 
@@ -32,25 +85,22 @@ def detect_windows_bruteforce(event):
     event_time = datetime.fromisoformat(event["timestamp"].replace("Z",""))
 
     
-    failed_login_counter.setdefault(ip,[]).append(event_time)
-
+    failed_login_counter.setdefault(ip, []).append((event["username"], event_time))
     #Window Checker
     window = timedelta(minutes=5)
     failed_login_counter[ip] = [
-        t for t in failed_login_counter[ip] 
+        (u,t) for (u,t) in failed_login_counter[ip] 
         if event_time - t < window
     ]
 
-    unique_users = {event["username"] for _ in failed_login_counter[ip]}
-
-    if len(failed_login_counter[ip]) >= 5 and ip not in alerted_keys:
+    unique_users = {u for (u,_) in failed_login_counter[ip]}
+    if len(failed_login_counter[ip]) >= 5 and ip:
         
         severity = "HIGH" if len(unique_users) > 1 else "MEDIUM"
-        alerted_keys.add(ip)
 
         alert = {
             "Severity": severity,               
-            "Title": "Windows Password Spraying Detected",
+            "Title": "Windows Brute Force Detected",
             "Source": event["source"],            
             "IP Address": ip,
             "Username": event["username"],
@@ -59,8 +109,8 @@ def detect_windows_bruteforce(event):
             "Timestamp": event["timestamp"]
         }
 
-        alert_suppresion(event, ip)  
-        emit_alert(alert)
+        if should_emit_alert(event, ip):
+            emit_alert(alert)
 
 def detect_windows_password_spraying(event):
     if event["source"] != "windows":
@@ -83,9 +133,8 @@ def detect_windows_password_spraying(event):
     ]
 
     unique_ips = {i for (i, _) in failed_login_user[username]}
-    if len(unique_ips) >= 3 and username not in alerted_keys:
+    if len(unique_ips) >= 3 and username:
 
-        alerted_keys.add(username)
         alert = {
             "Severity": "HIGH",               
             "Title": "Windows Password Spraying Detected",
@@ -97,8 +146,8 @@ def detect_windows_password_spraying(event):
             "Timestamp": event["timestamp"]
         }
 
-        alert_suppresion(event, username)  
-        emit_alert(alert)
+        if should_emit_alert(event, username):
+            emit_alert(alert)
 
 def normalize_timestamp(ts):
     dt = datetime.strptime(ts, "%m/%d/%Y %H:%M:%S")
@@ -136,6 +185,7 @@ def run_detections(event):
 
 
 with open(r"logs\windowsLogs.txt","r") as logText:
+    load_state()
     for line in logText:
         parsed = parse_windows_log(line.strip())
         
@@ -143,5 +193,7 @@ with open(r"logs\windowsLogs.txt","r") as logText:
             parsed["timestamp"] = normalize_timestamp(parsed["timestamp"])
             parsed["source"] = "windows"
             run_detections(parsed)
+            save_state()
         else:
             print("Unparsed Event")
+
