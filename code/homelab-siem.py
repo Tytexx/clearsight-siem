@@ -2,6 +2,8 @@ import re #regex
 from datetime import datetime, timedelta
 import json
 import os
+import uuid
+
 
 failed_login_counter = {}
 failed_login_user = {}
@@ -106,7 +108,8 @@ def detect_windows_bruteforce(event):
             "Username": event["username"],
             "Attempts": len(failed_login_counter.get(ip, [])),  
             "Time Window": "5 minutes",         
-            "Timestamp": event["timestamp"]
+            "Timestamp": event["timestamp"],
+            "rule_id": "WIN-BRUTE-001"
         }
 
         if should_emit_alert(event, ip):
@@ -143,7 +146,9 @@ def detect_windows_password_spraying(event):
             "Username": event["username"],
             "Attempts": len(failed_login_user.get(username, [])),  
             "Time Window": "3 minutes",         
-            "Timestamp": event["timestamp"]
+            "Timestamp": event["timestamp"],
+            "rule_id": "WIN-SPRAY-002"
+
         }
 
         if should_emit_alert(event, username):
@@ -155,9 +160,12 @@ def normalize_timestamp(ts):
     print(dt)
 
 def emit_alert(alert):
+    alert["alert_id"] = str(uuid.uuid4())
     print("\n ALERT")
     for k,v in alert.items():
         print(f"{k}: {v}")
+    with open("alerts.json","a") as f:
+        f.write(json.dumps(alert) + "\n")
 
 def parse_windows_log(line):
     pattern = (
