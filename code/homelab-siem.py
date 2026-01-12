@@ -4,10 +4,36 @@ import json
 import os
 import uuid
 
-
+#Global lists
 failed_login_counter = {}
 failed_login_user = {}
+
 last_alert_time = {}
+
+#States
+correlation_state = {}
+
+def check_escalation(alert, correlation_state):
+    entity_type = alert.get("entity_type")
+    print("\n")
+    print(entity_type)
+    entity_value = alert.get(entity_type)
+    print(entity_value)
+    key = f"{entity_type}:{entity_value}"
+
+    now = datetime.fromisoformat(alert["Timestamp"].replace("Z",""))
+
+    state = correlation_state.setdefault(key, {
+        "alerts": set(),
+        "first_seen": now
+    })
+
+    if now - state["first_seen"] > timedelta(minutes=10):
+        state["alerts"] = set()
+        state["first_seen"] = now
+
+    state["alerts"].add(alert["Title"])
+    return state
 
 source = "windows"
 
@@ -40,10 +66,10 @@ def serialize_state(): #Seralize for saving to .json file
     }
 
 def save_state():
-    with open(STATE_FILE, "w") as f:
-        json.dump(serialize_state(), f, indent=2)
-
-
+    # with open(STATE_FILE, "w") as f:
+    #     json.dump(serialize_state(), f, indent=2)
+    print("\nSaving emulated, not saving actually")
+ 
 
 def should_emit_alert(event, key):
         now = datetime.fromisoformat(event["timestamp"].replace("Z",""))
@@ -109,7 +135,8 @@ def detect_windows_bruteforce(event):
             "Attempts": len(failed_login_counter.get(ip, [])),  
             "Time Window": "5 minutes",         
             "Timestamp": event["timestamp"],
-            "rule_id": "WIN-BRUTE-001"
+            "rule_id": "WIN-BRUTE-001",
+            "entity_type": "IP Address"
         }
 
         if should_emit_alert(event, ip):
@@ -147,8 +174,8 @@ def detect_windows_password_spraying(event):
             "Attempts": len(failed_login_user.get(username, [])),  
             "Time Window": "3 minutes",         
             "Timestamp": event["timestamp"],
-            "rule_id": "WIN-SPRAY-002"
-
+            "rule_id": "WIN-SPRAY-002",
+            "entity_type": "Username"
         }
 
         if should_emit_alert(event, username):
@@ -160,7 +187,10 @@ def normalize_timestamp(ts):
     print(dt)
 
 def emit_alert(alert):
+
     alert["alert_id"] = str(uuid.uuid4())
+    check_escalation(alert, correlation_state)
+
     print("\n ALERT")
     for k,v in alert.items():
         print(f"{k}: {v}")
@@ -201,7 +231,7 @@ with open(r"logs\windowsLogs.txt","r") as logText:
             parsed["timestamp"] = normalize_timestamp(parsed["timestamp"])
             parsed["source"] = "windows"
             run_detections(parsed)
-            save_state()
         else:
             print("Unparsed Event")
+    save_state()
 
